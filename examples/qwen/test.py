@@ -28,9 +28,9 @@ from tensorrt_llm.bindings import GptJsonConfig, KVCacheType
 from tensorrt_llm.runtime import PYTHON_BINDINGS, ModelConfig, SamplingConfig
 from tensorrt_llm.runtime.session import Session, TensorInfo
 import tensorrt_llm
-from transformers import AutoModelForCausalLM
+from transformers import AutoModelForCausalLM, AutoTokenizer
 import numpy as np
-
+import time
 # # class QWEN_TRTLLM:
 
 #     def __init__(self, engine_dir):
@@ -385,101 +385,93 @@ import numpy as np
 #         #                            res.to(torch.float32).cpu().numpy(),
 #         #                            atol=0.12)
 
-#         # compare generation
-#         step = 1
-#         step1_id = torch.randint(100, (batch_size, 1)).int().cuda()
-#         gen_context_lengths = ctx_context_lengths.clone()
-#         gen_position_ids = torch.ones_like(step1_id).int().cuda() * input_len
-#         gen_last_token_ids = torch.zeros_like(gen_context_lengths).int().cuda()
-#         gen_host_request_types = torch.tensor([1] * batch_size,
-#                                               dtype=torch.int32)
+        # compare generation
+        # step = 1
+        # step1_id = torch.randint(100, (batch_size, 1)).int().cuda()
+        # gen_context_lengths = ctx_context_lengths.clone()
+        # gen_position_ids = torch.ones_like(step1_id).int().cuda() * input_len
+        # gen_last_token_ids = torch.zeros_like(gen_context_lengths).int().cuda()
+        # gen_host_request_types = torch.tensor([1] * batch_size,
+        #                                       dtype=torch.int32)
 
-#         # with torch.no_grad():
-#         #     hf_outputs = hf_llama.forward(
-#         #         step1_id,
-#         #         past_key_values=hf_outputs.past_key_values,
-#         #         use_cache=True)
-#         # torch.cuda.synchronize()
-#         # ref = hf_outputs.logits[:, -1, :]
+        # # with torch.no_grad():
+        # #     hf_outputs = hf_llama.forward(
+        # #         step1_id,
+        # #         past_key_values=hf_outputs.past_key_values,
+        # #         use_cache=True)
+        # # torch.cuda.synchronize()
+        # # ref = hf_outputs.logits[:, -1, :]
 
-#         # if enable_remove_input_padding:
-#         #     step1_id = step1_id.view([batch_size])
-#         #     gen_position_ids = gen_position_ids.view([batch_size])
-#         #     gen_last_token_ids = torch.ones_like(
-#         #         gen_context_lengths).int().cuda()
-#         #     gen_last_token_ids = torch.cumsum(gen_last_token_ids, dim=0).int()
-#         gen_runtime_perf_knobs = torch.tensor([-1] * perf_knob_tensor_size,
-#                                               dtype=torch.int64)
-#         # if context_fmha_flag == ContextFMHAType.enabled_with_fp32_acc:
-#         #     gen_runtime_perf_knobs[1] = 1  # enable_context_fmha_fp32_acc
+        # # if enable_remove_input_padding:
+        # #     step1_id = step1_id.view([batch_size])
+        # #     gen_position_ids = gen_position_ids.view([batch_size])
+        # #     gen_last_token_ids = torch.ones_like(
+        # #         gen_context_lengths).int().cuda()
+        # #     gen_last_token_ids = torch.cumsum(gen_last_token_ids, dim=0).int()
+        # gen_runtime_perf_knobs = torch.tensor([-1] * perf_knob_tensor_size,
+        #                                       dtype=torch.int64)
+        # # if context_fmha_flag == ContextFMHAType.enabled_with_fp32_acc:
+        # #     gen_runtime_perf_knobs[1] = 1  # enable_context_fmha_fp32_acc
 
-#         step1_buffer = {
-#             'input_ids': step1_id,
-#             'context_lengths': gen_context_lengths,
-#             'position_ids': gen_position_ids,
-#             'last_token_ids': gen_last_token_ids,
-#             'host_request_types': gen_host_request_types,
-#             'cache_indirection': cache_indirections[1],
-#             'host_runtime_perf_knobs': gen_runtime_perf_knobs,
-#             'host_context_progress': host_context_progress,
-#         }
-#         # if enable_remove_input_padding:
-#         #     step1_buffer['host_context_lengths'] = gen_context_lengths.cpu()
+        # step1_buffer = {
+        #     'input_ids': step1_id,
+        #     'context_lengths': gen_context_lengths,
+        #     'position_ids': gen_position_ids,
+        #     'last_token_ids': gen_last_token_ids,
+        #     'host_request_types': gen_host_request_types,
+        #     'cache_indirection': cache_indirections[1],
+        #     'host_runtime_perf_knobs': gen_runtime_perf_knobs,
+        #     'host_context_progress': host_context_progress,
+        # }
+        # # if enable_remove_input_padding:
+        # #     step1_buffer['host_context_lengths'] = gen_context_lengths.cpu()
 
-#         step1_shape = {k: v.shape for k, v in step1_buffer.items()}
+        # step1_shape = {k: v.shape for k, v in step1_buffer.items()}
 
-#         step1_shape[f'host_max_attention_window_sizes'] = (
-#             self.llm_config.num_hidden_layers, )
-#         for i in range(self.llm_config.num_hidden_layers):
-#             step1_shape[f'past_key_value_{i}'] = kv_shape
-#         step1_shape['sequence_length'] = (batch_size, )
-#         step1_shape['host_past_key_value_lengths'] = (batch_size, )
-#         step1_shape['host_sink_token_length'] = (1, )
-#         step1_buffer[f'host_max_attention_window_sizes'] = torch.tensor(
-#             [max_seq_len] * self.llm_config.num_hidden_layers, dtype=torch.int32)
-#         for i in range(self.llm_config.num_hidden_layers):
-#             step1_buffer[f'past_key_value_{i}'] = key_value_cache_buffers[i]
-#             step1_buffer[f'present_key_value_{i}'] = key_value_cache_buffers[i]
-#         step1_buffer[
-#             'host_past_key_value_lengths'] = sequence_length_buffer.cpu()
-#         sequence_length_buffer = torch.add(sequence_length_buffer, step)
-#         step1_buffer['sequence_length'] = sequence_length_buffer
-#         step1_buffer['host_sink_token_length'] = torch.tensor([0],
-#                                                               dtype=torch.int32)
+        # step1_shape[f'host_max_attention_window_sizes'] = (
+        #     self.llm_config.num_hidden_layers, )
+        # for i in range(self.llm_config.num_hidden_layers):
+        #     step1_shape[f'past_key_value_{i}'] = kv_shape
+        # step1_shape['sequence_length'] = (batch_size, )
+        # step1_shape['host_past_key_value_lengths'] = (batch_size, )
+        # step1_shape['host_sink_token_length'] = (1, )
+        # step1_buffer[f'host_max_attention_window_sizes'] = torch.tensor(
+        #     [max_seq_len] * self.llm_config.num_hidden_layers, dtype=torch.int32)
+        # for i in range(self.llm_config.num_hidden_layers):
+        #     step1_buffer[f'past_key_value_{i}'] = key_value_cache_buffers[i]
+        #     step1_buffer[f'present_key_value_{i}'] = key_value_cache_buffers[i]
+        # step1_buffer[
+        #     'host_past_key_value_lengths'] = sequence_length_buffer.cpu()
+        # sequence_length_buffer = torch.add(sequence_length_buffer, step)
+        # step1_buffer['sequence_length'] = sequence_length_buffer
+        # step1_buffer['host_sink_token_length'] = torch.tensor([0],
+        #                                                       dtype=torch.int32)
 
-#         context = runtime.context_1
-#         runtime._set_shape(context, step1_shape)
-#         runtime._set_buffer(context, step1_buffer)
-#         runtime._run(context)
-#         torch.cuda.synchronize()
-#         res = step1_buffer['logits']
+        # context = runtime.context_1
+        # runtime._set_shape(context, step1_shape)
+        # runtime._set_buffer(context, step1_buffer)
+        # runtime._run(context)
+        # torch.cuda.synchronize()
+        # res = step1_buffer['logits']
 
-#         # np.testing.assert_allclose(ref.to(torch.float32).cpu().numpy(),
-#         #                            res.to(torch.float32).cpu().numpy(),
-#         #                            atol=0.12)
+        # np.testing.assert_allclose(ref.to(torch.float32).cpu().numpy(),
+        #                            res.to(torch.float32).cpu().numpy(),
+        #                            atol=0.12)
 class QWEN_TRTLLM:
-    def __init__(self, engine_dir):
+    def __init__(self, engine_dir, llm_config):
         serialize_path = engine_dir / 'rank0.engine'
         with open(serialize_path, 'rb') as f:
             engine_buffer = f.read()
         rank = tensorrt_llm.mpi_rank()
         world_size = 1
         mapping = tensorrt_llm.Mapping(world_size, rank)
+
         self.runtime = tensorrt_llm.runtime.generation._Runtime(
             engine_buffer, mapping)
-
-        model_name = "/home/scratch.yuekaiz_wwfo_1/Qwen2.5-0.5B-Instruct"
-        self.hf_model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-        ).cuda().eval()
-        self.llm_config = self.hf_model.config
+        self.llm_config = llm_config
 
 
-    def run(self, ctx_ids, batch_size=1, input_len=5):
-        max_seq_len, beam_width = 20, 1
-        dtype = 'float16'
-        dtype = 'bfloat16'
-        # dtype = 'float32'
+    def run(self, ctx_ids, batch_size=1, input_len=5, dtype='float32', max_seq_len=512, beam_width=1):
         key_value_cache_buffers = []
         head_size = self.llm_config.hidden_size // self.llm_config.num_attention_heads
         for i in range(self.llm_config.num_hidden_layers):
@@ -493,9 +485,6 @@ class QWEN_TRTLLM:
                 ),
                             dtype=tensorrt_llm._utils.str_dtype_to_torch(dtype),
                             device='cuda'))
-
-        # compare context
-        step = 0
         
         ctx_context_lengths = input_len * torch.ones(
             (batch_size), dtype=torch.int32, device='cuda')
@@ -590,25 +579,46 @@ class QWEN_TRTLLM:
 
 
 if __name__ == '__main__':
-    torch.manual_seed(6)
     parser = argparse.ArgumentParser()
     parser.add_argument('--engine_dir', type=str, default='trt_engines_qwen2.5-0.5B-Instruct')
     args = parser.parse_args()
+
+    model_name = "/home/scratch.yuekaiz_wwfo_1/Qwen2.5-0.5B-Instruct"
+    tokenizer=AutoTokenizer.from_pretrained(model_name)
+    hf_model = AutoModelForCausalLM.from_pretrained(model_name).cuda().eval()   
+
     batch_size, input_len = 1, 5
-    ctx_ids = torch.randint(100, (batch_size, input_len)).int().cuda()
+    # torch.manual_seed(6)
+    # ctx_ids = torch.randint(100, (batch_size, input_len)).int().cuda()
+    text_inputs = "阿里巴巴集团是一家以商务电商为主的公司"
+    ctx_ids = tokenizer.encode(text_inputs, return_tensors="pt").int().cuda()
+    ctx_ids = ctx_ids[:, :input_len]
+	# tokens = tokenizer.encode(text_inputs, return_tensors="pt").to(
+	# 	device=codec_decoder.get_input_embeddings().weight.device)
 
-    qwen = QWEN_TRTLLM(Path(args.engine_dir))
-    res = qwen.run(ctx_ids, batch_size, input_len)
+    qwen = QWEN_TRTLLM(Path(args.engine_dir), hf_model.config)
 
-    with torch.no_grad():
-        hf_outputs = qwen.hf_model.forward(ctx_ids)
-    torch.cuda.synchronize()
-    ref = hf_outputs.logits[:, -1, :]
+    for i in range(10):
+        start_time = time.time()
+        res = qwen.run(ctx_ids, batch_size, input_len)
+        end_time = time.time()
+
+        with torch.no_grad():
+            hf_outputs = hf_model.forward(ctx_ids)
+        torch.cuda.synchronize()
+        ref = hf_outputs.logits[:, -1, :]
+        print(f"Time cost of trt-llm is {end_time - start_time:.4f}")
+        print(f"Time cost of hf-llm is {time.time() - end_time:.4f}")
+
 
     np.testing.assert_allclose(ref.to(torch.float32).cpu().numpy(),
                                 res.to(torch.float32).cpu().numpy(),
                                 atol=0.12)
-
+    # compute top 10 index of the logits
+    print(f"The top 10 index of ref is {torch.topk(ref, 10).indices}")
+    print(f"The top 10 index of res is {torch.topk(res, 10).indices}")
+    print(ref[:20])
+    print(res[:20])
     print("Test passed!")
 
 
