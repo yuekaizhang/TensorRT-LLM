@@ -56,6 +56,7 @@ from .phi.model import PhiForCausalLM, PhiModel
 from .qwen.model import QWenForCausalLM
 from .recurrentgemma.model import RecurrentGemmaForCausalLM
 from .redrafter.model import ReDrafterForCausalLM
+from .f5tts.model import F5TTS
 
 __all__ = [
     'BertModel',
@@ -122,6 +123,7 @@ __all__ = [
     'SpeculativeDecodingMode',
     'CohereForCausalLM',
     'MLLaMAModel',
+    'F5TTS',
 ]
 
 MODEL_MAP = {
@@ -190,4 +192,5 @@ MODEL_MAP = {
     'RobertaModel': RobertaModel,
     'RobertaForQuestionAnswering': RobertaForQuestionAnswering,
     'RobertaForSequenceClassification': RobertaForSequenceClassification,
+    'F5TTS': F5TTS
 }
