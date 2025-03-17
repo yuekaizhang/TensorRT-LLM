@@ -38,30 +38,30 @@ from .modules import (
 )
 
 # Text embedding
-class TextEmbedding(Module):
-    def __init__(self, text_num_embeds, text_dim, conv_layers = 0, conv_mult = 2):
-        super().__init__()
-        self.text_embed = nn.Embedding(text_num_embeds + 1, text_dim)  # use 0 as filler token
+# class TextEmbedding(Module):
+#     def __init__(self, text_num_embeds, text_dim, conv_layers = 0, conv_mult = 2):
+#         super().__init__()
+#         self.text_embed = nn.Embedding(text_num_embeds + 1, text_dim)  # use 0 as filler token
 
-        if conv_layers > 0:
-            self.extra_modeling = True
-            self.precompute_max_pos = 4096  # ~44s of 24khz audio
-            self.register_buffer("freqs_cis", precompute_freqs_cis(text_dim, self.precompute_max_pos), persistent=False)
-            self.text_blocks = nn.Sequential(*[ConvNeXtV2Block(text_dim, text_dim * conv_mult) for _ in range(conv_layers)])
-        else:
-            self.extra_modeling = False
+#         if conv_layers > 0:
+#             self.extra_modeling = True
+#             self.precompute_max_pos = 4096  # ~44s of 24khz audio
+#             self.register_buffer("freqs_cis", precompute_freqs_cis(text_dim, self.precompute_max_pos), persistent=False)
+#             self.text_blocks = nn.Sequential(*[ConvNeXtV2Block(text_dim, text_dim * conv_mult) for _ in range(conv_layers)])
+#         else:
+#             self.extra_modeling = False
 
-    def forward(self, text: int['b nt'], seq_len):
-        text = self.text_embed(text) # b n -> b n d
+#     def forward(self, text: int['b nt'], seq_len):
+#         text = self.text_embed(text) # b n -> b n d
 
-        # possible extra modeling
-        if self.extra_modeling:
-            # sinus pos emb
-            pos_idx = get_pos_embed_indices(torch.zeros(1, dtype=torch.int32), seq_len, max_pos=self.precompute_max_pos)
-            # convnextv2 blocks
-            text = self.text_blocks(text + self.freqs_cis[pos_idx])
+#         # possible extra modeling
+#         if self.extra_modeling:
+#             # sinus pos emb
+#             pos_idx = get_pos_embed_indices(torch.zeros(1, dtype=torch.int32), seq_len, max_pos=self.precompute_max_pos)
+#             # convnextv2 blocks
+#             text = self.text_blocks(text + self.freqs_cis[pos_idx])
 
-        return text
+#         return text
 
 class InputEmbedding(Module):
     def __init__(self, mel_dim, text_dim, out_dim):
@@ -75,96 +75,36 @@ class InputEmbedding(Module):
         return self.conv_pos_embed(x) + x
     
 # Transformer backbone using DiT blocks
+# class F5TTS(PretrainedModel):
+#     def __init__(self, config: PretrainedConfig):
+#         super().__init__(config)
+#         self.f5_transformer = DiT_transformer(config)
+#         self.dtype = str_dtype_to_trt(config.dtype)
+#         self.cfg_strength = 2
+
+#     def forward(self,
+#                 noise: float['b n d'],  # nosied input audio
+#                 cond: float['b n d'],  # masked cond audio
+#                 cond_drop: float['b n d'],
+#                 time: float['b n'],  # time step
+#                 rope_cos: float['b n d'],
+#                 rope_sin: float['b n d'],
+#                 t_scale: float['b'],
+#                 mask: bool['b n'] | None = None):
+        
+#         pred = self.f5_transformer(x = noise, cond = cond, cond_drop = cond_drop, time = time, rope_cos = rope_cos, rope_sin = rope_sin, mask = mask)
+#         pred, pred1 = chunk(pred, 2, dim = 0), chunk works only for static tensor
+#         # cfg_strength = constant(np.array([self.cfg_strength], dtype = np.float32)).cast(noise.dtype)
+#         # noise = noise + (pred_cond + (pred_cond - pred_uncond) * cfg_strength) * t_scale
+#         noise.mark_output('denoised', self.dtype)
+#         return noise
+
+
+
 class F5TTS(PretrainedModel):
     def __init__(self, config: PretrainedConfig):
         super().__init__(config)
-        self.f5_transformer = DiT_transformer(config)
         self.dtype = str_dtype_to_trt(config.dtype)
-
-    def forward(self,
-                noise: float['b n d'],  # nosied input audio
-                cond: float['b n d'],  # masked cond audio
-                cond_drop: float['b n d'],
-                time: float['b n'],  # time step
-                rope_cos: float['b n d'],
-                rope_sin: float['b n d'],
-                t_scale: float['b'],
-                mask: bool['b n'] | None = None):
-        
-        pred = self.f5_transformer(x = noise, cond = cond, cond_drop = cond_drop, time = time, rope_cos = rope_cos, rope_sin = rope_sin)
-        pred, pred1 = chunk(pred, 2, dim = 0)
-        twos = constant(np.array([2], dtype = np.float32)).cast(noise.dtype)
-
-        noise = noise + (pred + (pred - pred1) * twos) * t_scale
-        noise.mark_output('denoised', self.dtype)
-        return noise
-
-    def prepare_inputs(self, **kwargs):
-        mapping = self.config.mapping
-        if mapping.tp_size > 1:
-            current_all_reduce_helper().set_workspace_tensor(mapping, 1)
-
-        noise = Tensor(
-            name='noise',
-            dtype=self.dtype,
-            shape=[1, -1, 100],
-            dim_range=OrderedDict([
-                ('batch_size', [[1]*3]),
-                ('max_duratuion', [[100, 1226, 2000]]),
-                ('n_mels', [[100]*3]),
-            ]))
-        cond = Tensor(
-            name='cond',
-            dtype=self.dtype,
-            shape=[1, -1, 612],
-            dim_range=OrderedDict([
-                ('batch_size', [[1]*3]),
-                ('max_duratuion', [[100, 1226, 2000]]),
-                ('embeded_length', [[612]*3]),
-        ]))
-        cond_drop = Tensor(
-            name='cond_drop',
-            dtype=self.dtype,
-            shape=[1, -1, 612],
-            dim_range=OrderedDict([
-                ('batch_size', [[1]*3]),
-                ('max_duratuion', [[100, 1226, 2000]]),
-                ('embeded_length', [[612]*3]),
-        ]))
-        time = Tensor(name='time',
-                            dtype=self.dtype,
-                            shape=[1, 256],
-                            dim_range=OrderedDict([
-                                ('batch_size_t', [[1]*3]),
-                                ('freq_dim', [[256]*3]),
-                            ]))
-        rope_cos = Tensor(name='rope_cos',
-                            dtype=self.dtype,
-                            shape=[1, -1, 64],
-                            dim_range=OrderedDict([
-                                ('batch_size', [[1]*3]),
-                                ('max_duratuion', [[100, 1226, 2000]]),
-                                ('head_dim', [[64]*3]),
-                            ]))
-        rope_sin = Tensor(name='rope_sin',
-                            dtype=self.dtype,
-                            shape=[1, -1, 64],
-                            dim_range=OrderedDict([
-                                ('batch_size', [[1]*3]),
-                                ('max_duratuion', [[100, 1226, 2000]]),
-                                ('head_dim', [[64]*3]),
-                            ]))
-        t_scale = Tensor(name='t_scale',
-                            dtype=self.dtype,
-                            shape=[1],
-                            dim_range=OrderedDict([
-                                ('diff_t', [1])
-                            ]))
-        return {'noise': noise, 'cond': cond, 'cond_drop': cond_drop, 'time': time, 'rope_cos': rope_cos, 'rope_sin': rope_sin, 't_scale': t_scale}
-
-class DiT_transformer(PretrainedModel):
-    def __init__(self, config: PretrainedConfig):
-        super().__init__(config)
 
         self.time_embed = TimestepEmbedding(config.hidden_size) # √
         if config.text_dim is None:
@@ -191,9 +131,8 @@ class DiT_transformer(PretrainedModel):
 
     def forward(
             self,
-            x: float['b n d'],  # nosied input audio
+            noise: float['b n d'],  # nosied input audio
             cond: float['b n d'],  # masked cond audio
-            cond_drop: float['b n d'],
             time: float['b n'],  # time step
             rope_cos: float['b n d'] ,
             rope_sin: float['b n d'],
@@ -201,8 +140,74 @@ class DiT_transformer(PretrainedModel):
             scale = 1.0
     ):
         t = self.time_embed(time)
-        x = concat([self.input_embed(x, cond), self.input_embed(x, cond_drop)], dim = 0)
+        x = self.input_embed(noise, cond)
+        # x = concat([self.input_embed(x, cond), self.input_embed(x, cond_drop)], dim = 0)
         
         for block in self.transformer_blocks:
             x = block(x, t, rope_cos = rope_cos, rope_sin = rope_sin, mask=mask, scale = scale)
-        return self.proj_out(self.norm_out(x, t))
+        denoise = self.proj_out(self.norm_out(x, t))
+        denoise.mark_output('denoised', self.dtype)
+        return denoise
+
+    def prepare_inputs(self, **kwargs):
+        max_batch_size = kwargs['max_batch_size']
+        batch_size_range = [1, 2, max_batch_size]
+        mel_size = 100
+        max_seq_len = 3000
+        hidden_size = 512
+        concat_feature_dim = mel_size + hidden_size
+        freq_embed_dim=256
+        head_dim = 64
+        mapping = self.config.mapping
+        if mapping.tp_size > 1:
+            current_all_reduce_helper().set_workspace_tensor(mapping, 1)
+
+        noise = Tensor(
+            name='noise',
+            dtype=self.dtype,
+            shape=[-1, -1, mel_size],
+            dim_range=OrderedDict([
+                ('batch_size', [batch_size_range]),
+                ('max_duratuion', [[100, max_seq_len // 2, max_seq_len]]),
+                ('n_mels', [mel_size]),
+            ]))
+        cond = Tensor(
+            name='cond',
+            dtype=self.dtype,
+            shape=[-1, -1, concat_feature_dim],
+            dim_range=OrderedDict([
+                ('batch_size', [batch_size_range]),
+                ('max_duratuion', [[100, max_seq_len // 2, max_seq_len]]),
+                ('embeded_length', [concat_feature_dim]),
+        ]))
+        time = Tensor(name='time',
+                            dtype=self.dtype,
+                            shape=[-1, freq_embed_dim],
+                            dim_range=OrderedDict([
+                                ('batch_size_t', [batch_size_range]),
+                                ('freq_dim', [freq_embed_dim]),
+                            ]))
+        rope_cos = Tensor(name='rope_cos',
+                            dtype=self.dtype,
+                            shape=[-1, -1, head_dim],
+                            dim_range=OrderedDict([
+                                ('batch_size', [batch_size_range]),
+                                ('max_duratuion', [[100, max_seq_len // 2, max_seq_len]]),
+                                ('head_dim', [head_dim]),
+                            ]))
+        rope_sin = Tensor(name='rope_sin',
+                            dtype=self.dtype,
+                            shape=[-1, -1, head_dim],
+                            dim_range=OrderedDict([
+                                ('batch_size', [batch_size_range]),
+                                ('max_duratuion', [[100, max_seq_len // 2, max_seq_len]]),
+                                ('head_dim', [head_dim]),
+                            ]))
+        mask = Tensor(name='mask',
+                            dtype=str_dtype_to_trt("int32"),
+                            shape=[-1, -1],
+                            dim_range=OrderedDict([
+                                ('batch_size', [batch_size_range]),
+                                ('max_duratuion', [[100, max_seq_len // 2, max_seq_len]]),
+                            ]))
+        return {'noise': noise, 'cond': cond, 'time': time, 'rope_cos': rope_cos, 'rope_sin': rope_sin, 'mask': mask}

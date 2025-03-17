@@ -10,12 +10,13 @@ import torch.nn.functional as F
 from torch import nn
 import numpy as np
 import tensorrt as trt
+from tensorrt_llm._common import default_net
 from ..._utils import (fp32_array, int32_array, is_same_dtype, set_obj_attrs,
                       trt_dtype_to_np, trt_dtype_to_str,str_dtype_to_trt)
 from ...functional import (Tensor, allgather, arange, chunk, concat, constant,
-                           cos, exp, expand, shape, silu, sin, slice, split, permute,
+                           cos, exp, expand, shape, silu, sin, slice, split, permute, expand_mask, expand_dims_like,
                            unsqueeze, matmul, softmax, where, RopeEmbeddingUtils, minimum, repeat_interleave, squeeze, cast, gelu)
-from ...functional import expand_dims, view
+from ...functional import expand_dims, view, bert_attention
 from ...layers import MLP, BertAttention, Conv2d, LayerNorm, Linear, Conv1d, Mish, embedding, RowLinear, ColumnLinear
 from ...module import Module, ModuleList
 
@@ -285,6 +286,10 @@ class AttnProcessor:
         rope=None,
     ) -> torch.FloatTensor:
         batch_size = x.shape[0]
+        seq_len = x.shape[1]
+        N = shape(x, 1)
+        B = shape(x, 0)
+        input_lengths = expand(unsqueeze(N, 0).cast('int32'), unsqueeze(B, 0))
         query = attn.to_q(x)
         key = attn.to_k(x)
         value = attn.to_v(x)
@@ -295,11 +300,13 @@ class AttnProcessor:
         # attention
         inner_dim = key.shape[-1]
         head_dim = inner_dim // attn.heads
+        norm_factor = math.sqrt(attn.attention_head_size)
+        q_scaling = 1.0 / norm_factor
 
         def transpose_for_scores(x):
             new_x_shape = concat([
-                batch_size,
-                -1, attn.num_attention_heads, attn.attention_head_size
+                shape(x, 0),
+                shape(x, 1), attn.num_attention_heads, attn.attention_head_size
             ])
 
             y = x.view(new_x_shape)
@@ -308,28 +315,62 @@ class AttnProcessor:
 
         def transpose_for_scores_k(x):
             new_x_shape = concat([
-                batch_size,
-                -1, attn.num_attention_heads, attn.attention_head_size
+                shape(x, 0),
+                shape(x, 1), attn.num_attention_heads, attn.attention_head_size
             ])
 
             y = x.view(new_x_shape)
             y = y.permute([0, 2, 3, 1])
             return y
 
-        query = transpose_for_scores(query)
-        key = transpose_for_scores_k(key)
-        value = transpose_for_scores(value)
+        if default_net().plugin_config.bert_attention_plugin:
+            qkv = concat([query, key, value], dim = 2)
+            # TRT plugin mode
+            assert input_lengths is not None
+            if default_net().plugin_config.remove_input_padding:
+                qkv = qkv.view(
+                    concat([-1, 3 * inner_dim]))
+                max_input_length = constant(
+                    np.zeros([
+                        2048,
+                    ], dtype=np.int32))
+                print("============================================================================")
+            else:
+                max_input_length = None
+            context = bert_attention(qkv,
+                                     input_lengths,
+                                     attn.num_attention_heads,
+                                     attn.attention_head_size,
+                                     q_scaling=q_scaling,
+                                     max_input_length=max_input_length)
+        else:
+            query = transpose_for_scores(query)
+            key = transpose_for_scores_k(key)
+            value = transpose_for_scores(value)
 
-        attention_scores = matmul(query, key, use_fp32_acc=False)
-        attention_probs = softmax(attention_scores, dim=-1)
+            attention_scores = matmul(query, key, use_fp32_acc=False)
 
-        context = matmul(attention_probs, value, use_fp32_acc=False).transpose(1, 2)
-        context = context.view(
-            concat([
-                shape(context, 0),
-                shape(context, 1), attn.attention_hidden_size
-            ]))
-        return attn.to_out(context)
+            if mask is not None:
+                attention_mask = expand_mask(mask, shape(query, 2))
+                attention_mask = cast(attention_mask, attention_scores.dtype)
+                attention_scores = attention_scores + attention_mask
+                
+            attention_probs = softmax(attention_scores, dim=-1)
+
+            context = matmul(attention_probs, value, use_fp32_acc=False).transpose(1, 2)
+            context = context.view(
+                concat([
+                    shape(context, 0),
+                    shape(context, 1), attn.attention_hidden_size
+                ]))
+        context = attn.to_out(context)
+        if mask is not None:
+            mask = mask.view(concat([shape(mask, 0), shape(mask, 1), 1]))
+            mask = expand_dims_like(mask, context)
+            mask = cast(mask, context.dtype)
+            # mask = where(mask ==0, 0.0, 1.0)
+            context = context * mask
+        return context
 
 # DiT Block
 class DiTBlock(Module):
