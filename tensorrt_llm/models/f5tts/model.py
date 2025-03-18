@@ -136,7 +136,7 @@ class F5TTS(PretrainedModel):
             time: float['b n'],  # time step
             rope_cos: float['b n d'] ,
             rope_sin: float['b n d'],
-            mask: bool['b n'] | None = None,
+            input_lengths: int['b'],
             scale = 1.0
     ):
         t = self.time_embed(time)
@@ -144,7 +144,7 @@ class F5TTS(PretrainedModel):
         # x = concat([self.input_embed(x, cond), self.input_embed(x, cond_drop)], dim = 0)
         
         for block in self.transformer_blocks:
-            x = block(x, t, rope_cos = rope_cos, rope_sin = rope_sin, mask=mask, scale = scale)
+            x = block(x, t, rope_cos = rope_cos, rope_sin = rope_sin, input_lengths=input_lengths, scale = scale)
         denoise = self.proj_out(self.norm_out(x, t))
         denoise.mark_output('denoised', self.dtype)
         return denoise
@@ -203,11 +203,18 @@ class F5TTS(PretrainedModel):
                                 ('max_duratuion', [[100, max_seq_len // 2, max_seq_len]]),
                                 ('head_dim', [head_dim]),
                             ]))
-        mask = Tensor(name='mask',
-                            dtype=str_dtype_to_trt("int32"),
-                            shape=[-1, -1],
-                            dim_range=OrderedDict([
-                                ('batch_size', [batch_size_range]),
-                                ('max_duratuion', [[100, max_seq_len // 2, max_seq_len]]),
-                            ]))
-        return {'noise': noise, 'cond': cond, 'time': time, 'rope_cos': rope_cos, 'rope_sin': rope_sin, 'mask': mask}
+        # mask = Tensor(name='mask',
+        #                     dtype=str_dtype_to_trt("int32"),
+        #                     shape=[-1, -1],
+        #                     dim_range=OrderedDict([
+        #                         ('batch_size', [batch_size_range]),
+        #                         ('max_duratuion', [[100, max_seq_len // 2, max_seq_len]]),
+        #                     ]))
+        # return {'noise': noise, 'cond': cond, 'time': time, 'rope_cos': rope_cos, 'rope_sin': rope_sin, 'mask': mask}
+        input_lengths = Tensor(
+            name="input_lengths",
+            dtype=trt.int32,
+            shape=[-1],
+            dim_range=OrderedDict([("batch_size", [batch_size_range])]),
+        )
+        return {'noise': noise, 'cond': cond, 'time': time, 'rope_cos': rope_cos, 'rope_sin': rope_sin, 'input_lengths': input_lengths}

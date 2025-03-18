@@ -225,16 +225,16 @@ class Attention(Module):
             x: float['b n d'],  # noised input x
             rope_cos,
             rope_sin,
+            input_lengths,
             c: float['b n d'] = None,  # context c
-            mask: bool['b n'] | None = None,
             scale = 1.0,
             rope=None,
             c_rope=None,  # rotary position embedding for c
     ) -> torch.Tensor:
         if c is not None:
-            return self.processor(self, x, c=c, mask=mask, scale=scale, rope=rope, c_rope=c_rope)
+            return self.processor(self, x, c=c, input_lengths=input_lengths, scale=scale, rope=rope, c_rope=c_rope)
         else:
-            return self.processor(self, x, rope_cos=rope_cos, rope_sin=rope_sin, mask=mask, scale=scale)
+            return self.processor(self, x, rope_cos=rope_cos, rope_sin=rope_sin, input_lengths=input_lengths, scale=scale)
 
 def rotate_every_two_3dim(tensor: Tensor) -> Tensor:
     assert tensor.ndim() == 3
@@ -281,7 +281,7 @@ class AttnProcessor:
         x: float['b n d'],  # noised input x
         rope_cos,
         rope_sin,
-        mask: bool['b n'] | None = None,
+        input_lengths,
         scale = 1.0,
         rope=None,
     ) -> torch.FloatTensor:
@@ -289,7 +289,7 @@ class AttnProcessor:
         seq_len = x.shape[1]
         N = shape(x, 1)
         B = shape(x, 0)
-        input_lengths = expand(unsqueeze(N, 0).cast('int32'), unsqueeze(B, 0))
+        # input_lengths = expand(unsqueeze(N, 0).cast('int32'), unsqueeze(B, 0))
         query = attn.to_q(x)
         key = attn.to_k(x)
         value = attn.to_v(x)
@@ -302,6 +302,22 @@ class AttnProcessor:
         head_dim = inner_dim // attn.heads
         norm_factor = math.sqrt(attn.attention_head_size)
         q_scaling = 1.0 / norm_factor
+
+        seq_len_2d = concat([1, N])
+        max_position_embeddings = 4096
+        # create position ids
+        position_ids_buffer = constant(
+            np.expand_dims(
+                np.arange(max_position_embeddings).astype(np.int32),
+                0))
+        tmp_position_ids = slice(position_ids_buffer,
+                                starts=[0, 0],
+                                sizes=seq_len_2d)
+        tmp_position_ids = expand(tmp_position_ids, concat([B, N])) #BxL
+        tmp_input_lengths = unsqueeze(input_lengths, 1)  #Bx1
+        tmp_input_lengths = expand(tmp_input_lengths, concat([B, N]))  #BxL
+        mask = tmp_position_ids < tmp_input_lengths  # BxL
+        mask = mask.cast('int32')
 
         def transpose_for_scores(x):
             new_x_shape = concat([
@@ -337,6 +353,7 @@ class AttnProcessor:
                 print("============================================================================")
             else:
                 max_input_length = None
+                print("===========================***************************************************")
             context = bert_attention(qkv,
                                      input_lengths,
                                      attn.num_attention_heads,
@@ -390,12 +407,12 @@ class DiTBlock(Module):
         self.ff_norm = LayerNorm(dim, elementwise_affine=False, eps=1e-6)
         self.ff = FeedForward(dim = dim, mult = ff_mult, dropout = dropout, approximate = "tanh")
 
-    def forward(self, x, t, rope_cos, rope_sin, mask = None, scale = 1.0, rope = ModuleNotFoundError): # x: noised input, t: time embedding
+    def forward(self, x, t, rope_cos, rope_sin, input_lengths, scale = 1.0, rope = ModuleNotFoundError): # x: noised input, t: time embedding
         # pre-norm & modulation for attention input
         norm, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.attn_norm(x, emb=t)
         # attention
         # norm ----> (2,1226,1024)
-        attn_output = self.attn(x=norm, rope_cos=rope_cos, rope_sin=rope_sin, mask=mask, scale=scale)
+        attn_output = self.attn(x=norm, rope_cos=rope_cos, rope_sin=rope_sin, input_lengths=input_lengths, scale=scale)
 
         # process attention output for input x
         x = x + unsqueeze(gate_msa, 1) * attn_output
