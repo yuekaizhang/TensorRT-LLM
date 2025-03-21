@@ -155,7 +155,7 @@ class F5TTS(PretrainedModel):
         batch_size_range = [1, 2, max_batch_size]
         mel_size = 100
         max_seq_len = 3000
-        num_frames_range = [100, 2 * max_seq_len, max_seq_len * max_batch_size]
+        num_frames_range = [200, 2 * max_seq_len, max_seq_len * max_batch_size]
         hidden_size = 512
         concat_feature_dim = mel_size + hidden_size
         freq_embed_dim=256
@@ -175,7 +175,7 @@ class F5TTS(PretrainedModel):
             cond = Tensor(
                 name='cond',
                 dtype=self.dtype,
-                shape=[-1, -1, concat_feature_dim],
+                shape=[-1, concat_feature_dim],
                 dim_range=OrderedDict([
                     ('num_frames', [num_frames_range]),
                     ('embeded_length', [concat_feature_dim]),
@@ -189,14 +189,14 @@ class F5TTS(PretrainedModel):
                                 ]))
             rope_cos = Tensor(name='rope_cos',
                                 dtype=self.dtype,
-                                shape=[-1, -1, head_dim],
+                                shape=[-1, head_dim],
                                 dim_range=OrderedDict([
                                     ('num_frames', [num_frames_range]),
                                     ('head_dim', [head_dim]),
                                 ]))
             rope_sin = Tensor(name='rope_sin',
                                 dtype=self.dtype,
-                                shape=[-1, -1, head_dim],
+                                shape=[-1, head_dim],
                                 dim_range=OrderedDict([
                                     ('num_frames', [num_frames_range]),
                                     ('head_dim', [head_dim]),

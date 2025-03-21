@@ -112,7 +112,8 @@ class AdaLayerNormZero(Module):
         if default_net().plugin_config.remove_input_padding:
             x = x * (ones + scale_msa) + shift_msa
         else:
-            x = x * unsqueeze((ones + scale_msa), 1) + unsqueeze(shift_msa, 1)
+            x = x * (ones + unsqueeze(scale_msa, 1)) + unsqueeze(shift_msa, 1)
+            # x = x * unsqueeze((ones + scale_msa), 1) + unsqueeze(shift_msa, 1)
         return x, gate_msa, shift_mlp, scale_mlp, gate_mlp
 
 class AdaLayerNormZero_Final(Module):
