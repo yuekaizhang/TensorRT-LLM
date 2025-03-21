@@ -20,83 +20,82 @@ from ...functional import expand_dims, view, bert_attention
 from ...layers import MLP, BertAttention, Conv2d, LayerNorm, Linear, Conv1d, Mish, embedding, RowLinear, ColumnLinear
 from ...module import Module, ModuleList
 
-class GRN(Module):
-    def __init__(self, dim):
-        super().__init__()
-        self.gamma = nn.Parameter(torch.zeros(1, 1, dim))
-        self.beta = nn.Parameter(torch.zeros(1, 1, dim))
+# class GRN(Module):
+#     def __init__(self, dim):
+#         super().__init__()
+#         self.gamma = nn.Parameter(torch.zeros(1, 1, dim))
+#         self.beta = nn.Parameter(torch.zeros(1, 1, dim))
 
-    def forward(self, x):
-        Gx = torch.norm(x, p=2, dim=1, keepdim=True)
-        Nx = Gx / (Gx.mean(dim=-1, keepdim=True) + 1e-6)
-        return self.gamma * (x * Nx) + self.beta + x
+#     def forward(self, x):
+#         Gx = torch.norm(x, p=2, dim=1, keepdim=True)
+#         Nx = Gx / (Gx.mean(dim=-1, keepdim=True) + 1e-6)
+#         return self.gamma * (x * Nx) + self.beta + x
 
 class FeedForward(Module):
-    def __init__(self, dim, dim_out=None, mult=4, dropout=0.0, approximate: str = "none"):
+    def __init__(self, dim, dim_out=None, mult=4, dropout=0.0):
         super().__init__()
         inner_dim = int(dim * mult)
         dim_out = dim_out if dim_out is not None else dim
 
-        self.approximate = approximate
         self.project_in = Linear(dim, inner_dim)
         self.ff = Linear(inner_dim, dim_out)
 
     def forward(self, x):
         return self.ff(gelu(self.project_in(x)))
 
-class ConvNeXtV2Block(Module):
-    def __init__(
-        self,
-        dim: int,
-        intermediate_dim: int,
-        dilation: int = 1,
-    ):
-        super().__init__()
-        padding = (dilation * (7 - 1)) // 2
-        self.dwconv = nn.Conv1d(
-            dim, dim, kernel_size=7, padding=padding, groups=dim, dilation=dilation
-        )  # depthwise conv
-        self.norm = nn.LayerNorm(dim, eps=1e-6)
-        self.pwconv1 = nn.Linear(dim, intermediate_dim)  # pointwise/1x1 convs, implemented with linear layers
-        self.act = nn.GELU()
-        self.grn = GRN(intermediate_dim)
-        self.pwconv2 = nn.Linear(intermediate_dim, dim)
+# class ConvNeXtV2Block(Module):
+#     def __init__(
+#         self,
+#         dim: int,
+#         intermediate_dim: int,
+#         dilation: int = 1,
+#     ):
+#         super().__init__()
+#         padding = (dilation * (7 - 1)) // 2
+#         self.dwconv = nn.Conv1d(
+#             dim, dim, kernel_size=7, padding=padding, groups=dim, dilation=dilation
+#         )  # depthwise conv
+#         self.norm = nn.LayerNorm(dim, eps=1e-6)
+#         self.pwconv1 = nn.Linear(dim, intermediate_dim)  # pointwise/1x1 convs, implemented with linear layers
+#         self.act = nn.GELU()
+#         self.grn = GRN(intermediate_dim)
+#         self.pwconv2 = nn.Linear(intermediate_dim, dim)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        residual = x
-        x = x.transpose(1, 2)  # b n d -> b d n
-        x = self.dwconv(x)
-        x = x.transpose(1, 2)  # b d n -> b n d
-        x = self.norm(x)
-        x = self.pwconv1(x)
-        x = self.act(x)
-        x = self.grn(x)
-        x = self.pwconv2(x)
-        return residual + x
+#     def forward(self, x: torch.Tensor) -> torch.Tensor:
+#         residual = x
+#         x = x.transpose(1, 2)  # b n d -> b d n
+#         x = self.dwconv(x)
+#         x = x.transpose(1, 2)  # b d n -> b n d
+#         x = self.norm(x)
+#         x = self.pwconv1(x)
+#         x = self.act(x)
+#         x = self.grn(x)
+#         x = self.pwconv2(x)
+#         return residual + x
 
-def get_pos_embed_indices(start, length, max_pos, scale=1.0):
-    # length = length if isinstance(length, int) else length.max()
-    scale = scale * torch.ones_like(start, dtype=torch.float32)  # in case scale is a scalar
-    pos = (
-        unsqueeze(start, 1)
-        + (torch.arange(length, device=start.device, dtype=torch.float32).unsqueeze(0) * scale.unsqueeze(1)).long()
-    )
-    # avoid extra long error.
-    pos = torch.where(pos < max_pos, pos, max_pos - 1)
-    return pos
+# def get_pos_embed_indices(start, length, max_pos, scale=1.0):
+#     # length = length if isinstance(length, int) else length.max()
+#     scale = scale * torch.ones_like(start, dtype=torch.float32)  # in case scale is a scalar
+#     pos = (
+#         unsqueeze(start, 1)
+#         + (torch.arange(length, device=start.device, dtype=torch.float32).unsqueeze(0) * scale.unsqueeze(1)).long()
+#     )
+#     # avoid extra long error.
+#     pos = torch.where(pos < max_pos, pos, max_pos - 1)
+#     return pos
 
-def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0, theta_rescale_factor=1.0):
-    # proposed by reddit user bloc97, to rescale rotary embeddings to longer sequence length without fine-tuning
-    # has some connection to NTK literature
-    # https://www.reddit.com/r/LocalLLaMA/comments/14lz7j5/ntkaware_scaled_rope_allows_llama_models_to_have/
-    # https://github.com/lucidrains/rotary-embedding-torch/blob/main/rotary_embedding_torch/rotary_embedding_torch.py
-    theta *= theta_rescale_factor ** (dim / (dim - 2))
-    freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))
-    t = torch.arange(end, device=freqs.device)  # type: ignore
-    freqs = torch.outer(t, freqs).float()  # type: ignore
-    freqs_cos = torch.cos(freqs)  # real part
-    freqs_sin = torch.sin(freqs)  # imaginary part
-    return torch.cat([freqs_cos, freqs_sin], dim=-1)
+# def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0, theta_rescale_factor=1.0):
+#     # proposed by reddit user bloc97, to rescale rotary embeddings to longer sequence length without fine-tuning
+#     # has some connection to NTK literature
+#     # https://www.reddit.com/r/LocalLLaMA/comments/14lz7j5/ntkaware_scaled_rope_allows_llama_models_to_have/
+#     # https://github.com/lucidrains/rotary-embedding-torch/blob/main/rotary_embedding_torch/rotary_embedding_torch.py
+#     theta *= theta_rescale_factor ** (dim / (dim - 2))
+#     freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))
+#     t = torch.arange(end, device=freqs.device)  # type: ignore
+#     freqs = torch.outer(t, freqs).float()  # type: ignore
+#     freqs_cos = torch.cos(freqs)  # real part
+#     freqs_sin = torch.sin(freqs)  # imaginary part
+#     return torch.cat([freqs_cos, freqs_sin], dim=-1)
 
 class AdaLayerNormZero(Module):
     def __init__(self, dim):
@@ -140,14 +139,14 @@ class ConvPositionEmbedding(Module):
         self.mish = Mish()
 
     def forward(self, x: float["b n d"], mask: bool["b n"] | None = None):  # noqa: F722
-        if mask is not None:
-            mask = mask[..., None]
-            x = x.masked_fill(~mask, 0.0)
+        # if mask is not None:
+        #     mask = mask[..., None]
+        #     x = x.masked_fill(~mask, 0.0)
         x = permute(x, [0, 2, 1])
         x = self.mish(self.conv1d2(self.mish(self.conv1d1(x))))
         out = permute(x, [0, 2, 1])
-        if mask is not None:
-            out = out.masked_fill(~mask, 0.0)
+        # if mask is not None:
+        #     out = out.masked_fill(~mask, 0.0)
         return out
 
 class Attention(Module):
@@ -405,7 +404,7 @@ class DiTBlock(Module):
             )
 
         self.ff_norm = LayerNorm(dim, elementwise_affine=False, eps=1e-6)
-        self.ff = FeedForward(dim = dim, mult = ff_mult, dropout = dropout, approximate = "tanh")
+        self.ff = FeedForward(dim = dim, mult = ff_mult, dropout = dropout)
 
     def forward(self, x, t, rope_cos, rope_sin, input_lengths, scale = 1.0, rope = ModuleNotFoundError): # x: noised input, t: time embedding
         # pre-norm & modulation for attention input
@@ -423,25 +422,25 @@ class DiTBlock(Module):
 
         return x
 
-class SinusPositionEmbedding(Module):
-    def __init__(self, dim):
-        super().__init__()
-        self.dim = dim
+# class SinusPositionEmbedding(Module):
+#     def __init__(self, dim):
+#         super().__init__()
+#         self.dim = dim
 
-    def forward(self, x, scale=1000):
-        half_dim = self.dim // 2
-        emb = math.log(10000) / (half_dim - 1)
-        emb = exp(arange(start=0, end=half_dim, dtype=trt_dtype_to_str(trt.float32)) * - emb)
-        emb = scale * unsqueeze(x, 1) * unsqueeze(emb, 0)
-        emb = concat([cos(emb), sin(emb)], dim=-1)
-        emb = emb.cast(x.dtype)
-        assert self.dim % 2 == 0
-        return emb
+#     def forward(self, x, scale=1000):
+#         half_dim = self.dim // 2
+#         emb = math.log(10000) / (half_dim - 1)
+#         emb = exp(arange(start=0, end=half_dim, dtype=trt_dtype_to_str(trt.float32)) * - emb)
+#         emb = scale * unsqueeze(x, 1) * unsqueeze(emb, 0)
+#         emb = concat([cos(emb), sin(emb)], dim=-1)
+#         emb = emb.cast(x.dtype)
+#         assert self.dim % 2 == 0
+#         return emb
 
 class TimestepEmbedding(Module):
     def __init__(self, dim, freq_embed_dim=256, dtype=None):
         super().__init__()
-        self.time_embed = SinusPositionEmbedding(freq_embed_dim)
+        # self.time_embed = SinusPositionEmbedding(freq_embed_dim)
         self.mlp1 = Linear(freq_embed_dim, dim, bias=True, dtype=dtype)
         self.mlp2 = Linear(dim, dim, bias=True, dtype=dtype)
 
