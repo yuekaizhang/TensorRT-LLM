@@ -460,7 +460,8 @@ class DiTBlock(Module):
         if default_net().plugin_config.remove_input_padding:
             norm = self.ff_norm(x) * (ones + scale_mlp) + shift_mlp
         else:
-            norm = self.ff_norm(x) * (ones + scale_mlp) + shift_mlp
+            norm = self.ff_norm(x) * (ones + unsqueeze(scale_mlp, 1)) + unsqueeze(shift_mlp, 1)
+            # norm = self.ff_norm(x) * (ones + scale_mlp) + shift_mlp
         ff_output = self.ff(norm)
         if default_net().plugin_config.remove_input_padding:
             x = x + gate_mlp * ff_output

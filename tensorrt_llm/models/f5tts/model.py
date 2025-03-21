@@ -152,7 +152,7 @@ class F5TTS(PretrainedModel):
 
     def prepare_inputs(self, **kwargs):
         max_batch_size = kwargs['max_batch_size']
-        batch_size_range = [1, 2, max_batch_size]
+        batch_size_range = [2, 2, max_batch_size]
         mel_size = 100
         max_seq_len = 3000
         num_frames_range = [200, 2 * max_seq_len, max_seq_len * max_batch_size]
