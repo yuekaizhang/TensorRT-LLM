@@ -109,7 +109,10 @@ class AdaLayerNormZero(Module):
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = chunk(emb, 6, dim=1)
         x = self.norm(x)
         ones = constant(np.ones(1, dtype = np.float32)).cast(x.dtype)
-        x = x * (ones + unsqueeze(scale_msa, 1)) + unsqueeze(shift_msa, 1)
+        if default_net().plugin_config.remove_input_padding:
+            x = x * (ones + scale_msa) + shift_msa
+        else:
+            x = x * unsqueeze((ones + scale_msa), 1) + unsqueeze(shift_msa, 1)
         return x, gate_msa, shift_mlp, scale_mlp, gate_mlp
 
 class AdaLayerNormZero_Final(Module):
@@ -126,8 +129,11 @@ class AdaLayerNormZero_Final(Module):
         # scale ----> (1, 1024)
         # x     ----> (1, -1, 1024)
         ones = constant(np.ones(1, dtype = np.float32)).cast(x.dtype)
-        x = self.norm(x) * unsqueeze((ones + scale), 1)
-        x = x + unsqueeze(shift, 1)
+        if default_net().plugin_config.remove_input_padding:
+            x = self.norm(x) * (ones + scale) + shift
+        else:
+            x = self.norm(x) * unsqueeze((ones + scale), 1)
+            x = x + unsqueeze(shift, 1)
         return x
 
 class ConvPositionEmbedding(Module):
@@ -142,9 +148,13 @@ class ConvPositionEmbedding(Module):
         # if mask is not None:
         #     mask = mask[..., None]
         #     x = x.masked_fill(~mask, 0.0)
+        if default_net().plugin_config.remove_input_padding:
+            x = unsqueeze(x, 0)
         x = permute(x, [0, 2, 1])
         x = self.mish(self.conv1d2(self.mish(self.conv1d1(x))))
         out = permute(x, [0, 2, 1])
+        if default_net().plugin_config.remove_input_padding:
+            out = squeeze(out, 0)
         # if mask is not None:
         #     out = out.masked_fill(~mask, 0.0)
         return out
@@ -236,37 +246,61 @@ class Attention(Module):
             return self.processor(self, x, rope_cos=rope_cos, rope_sin=rope_sin, input_lengths=input_lengths, scale=scale)
 
 def rotate_every_two_3dim(tensor: Tensor) -> Tensor:
-    assert tensor.ndim() == 3
-
     shape_tensor = concat([
         shape(tensor, i) / 2 if i == (tensor.ndim() -
-                                      1) else shape(tensor, i)
+                                    1) else shape(tensor, i)
         for i in range(tensor.ndim())
     ])
-    x1 = slice(tensor, [0, 0,  0], shape_tensor, [1, 1, 2])
-    x2 = slice(tensor, [0, 0,  1], shape_tensor, [1, 1, 2])
-    x1 = expand_dims(x1, 3)
-    x2 = expand_dims(x2, 3)
-    zero = constant(
-        np.ascontiguousarray(
-            np.zeros([1], dtype=trt_dtype_to_np(tensor.dtype))))
-    x2 = zero - x2
-    x = concat([x2, x1], 3)
-    out =  view(
-        x, concat([shape(x, 0),
-                   shape(x, 1),
-                   shape(x, 2)*2]))
+    if default_net().plugin_config.remove_input_padding:
+        assert tensor.ndim() == 2
+        x1 = slice(tensor, [0, 0], shape_tensor, [1, 2])
+        x2 = slice(tensor, [0, 1], shape_tensor, [1, 2])
+        x1 = expand_dims(x1, 2)
+        x2 = expand_dims(x2, 2)
+        zero = constant(
+            np.ascontiguousarray(
+                np.zeros([1], dtype=trt_dtype_to_np(tensor.dtype))))
+        x2 = zero - x2
+        x = concat([x2, x1], 2)
+        out =  view(
+            x, concat([shape(x, 0),
+                    shape(x, 1)*2]))
+    else:
+        assert tensor.ndim() == 3
+
+        x1 = slice(tensor, [0, 0,  0], shape_tensor, [1, 1, 2])
+        x2 = slice(tensor, [0, 0,  1], shape_tensor, [1, 1, 2])
+        x1 = expand_dims(x1, 3)
+        x2 = expand_dims(x2, 3)
+        zero = constant(
+            np.ascontiguousarray(
+                np.zeros([1], dtype=trt_dtype_to_np(tensor.dtype))))
+        x2 = zero - x2
+        x = concat([x2, x1], 3)
+        out =  view(
+            x, concat([shape(x, 0),
+                    shape(x, 1),
+                    shape(x, 2)*2]))
 
     return out
 
 def apply_rotary_pos_emb_3dim(x, rope_cos, rope_sin):
-    rot_dim = shape(rope_cos, 2) #64
-    new_t_shape =  concat([shape(x, 0), shape(x, 1), rot_dim]) # (2, -1, 64)
-    x_ = slice(x, [0, 0, 0], new_t_shape, [1, 1, 1])
-    end_dim = shape(x, 2) - shape(rope_cos, 2)
-    new_t_unrotated_shape = concat([shape(x, 0), shape(x, 1), end_dim]) # (2, -1, 960)
-    x_unrotated = slice(x, concat([0, 0, rot_dim]), new_t_unrotated_shape, [1, 1, 1])
-    out = concat([x_ * rope_cos + rotate_every_two_3dim(x_) * rope_sin, x_unrotated], dim = -1)
+    if default_net().plugin_config.remove_input_padding:
+        rot_dim = shape(rope_cos, -1) #64
+        new_t_shape =  concat([shape(x, 0), rot_dim]) # (-1, 64)
+        x_ = slice(x, [0, 0], new_t_shape, [1, 1])
+        end_dim = shape(x, -1) - shape(rope_cos, -1)
+        new_t_unrotated_shape = concat([shape(x, 0), end_dim]) # (2, -1, 960)
+        x_unrotated = slice(x, concat([0, rot_dim]), new_t_unrotated_shape, [1, 1])
+        out = concat([x_ * rope_cos + rotate_every_two_3dim(x_) * rope_sin, x_unrotated], dim = -1)
+    else:
+        rot_dim = shape(rope_cos, 2) #64
+        new_t_shape =  concat([shape(x, 0), shape(x, 1), rot_dim]) # (2, -1, 64)
+        x_ = slice(x, [0, 0, 0], new_t_shape, [1, 1, 1])
+        end_dim = shape(x, 2) - shape(rope_cos, 2)
+        new_t_unrotated_shape = concat([shape(x, 0), shape(x, 1), end_dim]) # (2, -1, 960)
+        x_unrotated = slice(x, concat([0, 0, rot_dim]), new_t_unrotated_shape, [1, 1, 1])
+        out = concat([x_ * rope_cos + rotate_every_two_3dim(x_) * rope_sin, x_unrotated], dim = -1)
     # t -> (2,-1,1024)   freqs -> (-1,64)
     return out
 
@@ -284,11 +318,9 @@ class AttnProcessor:
         scale = 1.0,
         rope=None,
     ) -> torch.FloatTensor:
-        batch_size = x.shape[0]
-        seq_len = x.shape[1]
-        N = shape(x, 1)
-        B = shape(x, 0)
-        # input_lengths = expand(unsqueeze(N, 0).cast('int32'), unsqueeze(B, 0))
+
+
+
         query = attn.to_q(x)
         key = attn.to_k(x)
         value = attn.to_v(x)
@@ -301,45 +333,28 @@ class AttnProcessor:
         head_dim = inner_dim // attn.heads
         norm_factor = math.sqrt(attn.attention_head_size)
         q_scaling = 1.0 / norm_factor
-
-        seq_len_2d = concat([1, N])
-        max_position_embeddings = 4096
-        # create position ids
-        position_ids_buffer = constant(
-            np.expand_dims(
-                np.arange(max_position_embeddings).astype(np.int32),
-                0))
-        tmp_position_ids = slice(position_ids_buffer,
-                                starts=[0, 0],
-                                sizes=seq_len_2d)
-        tmp_position_ids = expand(tmp_position_ids, concat([B, N])) #BxL
-        tmp_input_lengths = unsqueeze(input_lengths, 1)  #Bx1
-        tmp_input_lengths = expand(tmp_input_lengths, concat([B, N]))  #BxL
-        mask = tmp_position_ids < tmp_input_lengths  # BxL
-        mask = mask.cast('int32')
-
-        def transpose_for_scores(x):
-            new_x_shape = concat([
-                shape(x, 0),
-                shape(x, 1), attn.num_attention_heads, attn.attention_head_size
-            ])
-
-            y = x.view(new_x_shape)
-            y = y.transpose(1, 2)
-            return y
-
-        def transpose_for_scores_k(x):
-            new_x_shape = concat([
-                shape(x, 0),
-                shape(x, 1), attn.num_attention_heads, attn.attention_head_size
-            ])
-
-            y = x.view(new_x_shape)
-            y = y.permute([0, 2, 3, 1])
-            return y
+        mask = None
+        if not default_net().plugin_config.remove_input_padding:
+            N = shape(x, 1)
+            B = shape(x, 0)
+            seq_len_2d = concat([1, N])
+            max_position_embeddings = 4096
+            # create position ids
+            position_ids_buffer = constant(
+                np.expand_dims(
+                    np.arange(max_position_embeddings).astype(np.int32),
+                    0))
+            tmp_position_ids = slice(position_ids_buffer,
+                                    starts=[0, 0],
+                                    sizes=seq_len_2d)
+            tmp_position_ids = expand(tmp_position_ids, concat([B, N])) #BxL
+            tmp_input_lengths = unsqueeze(input_lengths, 1)  #Bx1
+            tmp_input_lengths = expand(tmp_input_lengths, concat([B, N]))  #BxL
+            mask = tmp_position_ids < tmp_input_lengths  # BxL
+            mask = mask.cast('int32')
 
         if default_net().plugin_config.bert_attention_plugin:
-            qkv = concat([query, key, value], dim = 2)
+            qkv = concat([query, key, value], dim = -1)
             # TRT plugin mode
             assert input_lengths is not None
             if default_net().plugin_config.remove_input_padding:
@@ -352,7 +367,7 @@ class AttnProcessor:
                 print("============================================================================")
             else:
                 max_input_length = None
-                print("===========================***************************************************")
+                print("******************************************************************************************************")
             context = bert_attention(qkv,
                                      input_lengths,
                                      attn.num_attention_heads,
@@ -360,6 +375,28 @@ class AttnProcessor:
                                      q_scaling=q_scaling,
                                      max_input_length=max_input_length)
         else:
+            assert not default_net().plugin_config.remove_input_padding
+
+            def transpose_for_scores(x):
+                new_x_shape = concat([
+                    shape(x, 0),
+                    shape(x, 1), attn.num_attention_heads, attn.attention_head_size
+                ])
+
+                y = x.view(new_x_shape)
+                y = y.transpose(1, 2)
+                return y
+
+            def transpose_for_scores_k(x):
+                new_x_shape = concat([
+                    shape(x, 0),
+                    shape(x, 1), attn.num_attention_heads, attn.attention_head_size
+                ])
+
+                y = x.view(new_x_shape)
+                y = y.permute([0, 2, 3, 1])
+                return y
+
             query = transpose_for_scores(query)
             key = transpose_for_scores_k(key)
             value = transpose_for_scores(value)
@@ -414,11 +451,20 @@ class DiTBlock(Module):
         attn_output = self.attn(x=norm, rope_cos=rope_cos, rope_sin=rope_sin, input_lengths=input_lengths, scale=scale)
 
         # process attention output for input x
-        x = x + unsqueeze(gate_msa, 1) * attn_output
+        if default_net().plugin_config.remove_input_padding:
+            x = x + gate_msa * attn_output
+        else:
+            x = x + unsqueeze(gate_msa, 1) * attn_output
         ones = constant(np.ones(1, dtype = np.float32)).cast(x.dtype)
-        norm = self.ff_norm(x) * (ones + unsqueeze(scale_mlp, 1)) + unsqueeze(shift_mlp, 1)
+        if default_net().plugin_config.remove_input_padding:
+            norm = self.ff_norm(x) * (ones + scale_mlp) + shift_mlp
+        else:
+            norm = self.ff_norm(x) * (ones + scale_mlp) + shift_mlp
         ff_output = self.ff(norm)
-        x = x + unsqueeze(gate_mlp, 1) * ff_output
+        if default_net().plugin_config.remove_input_padding:
+            x = x + gate_mlp * ff_output
+        else:
+            x = x + unsqueeze(gate_mlp, 1) * ff_output
 
         return x
 

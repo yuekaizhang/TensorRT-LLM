@@ -26,15 +26,16 @@ from ...functional import (Tensor, allgather, arange, chunk, concat, constant,
                            cos, exp, expand, shape, silu, sin, slice, split,
                            unsqueeze, squeeze, cast)
 from ...module import Module, ModuleList
+from tensorrt_llm._common import default_net
 from ...layers import Linear
 
 from .modules import (
     TimestepEmbedding,
-    ConvNeXtV2Block,
+    # ConvNeXtV2Block,
     ConvPositionEmbedding,
     DiTBlock,
     AdaLayerNormZero_Final,
-    precompute_freqs_cis, get_pos_embed_indices,
+    # precompute_freqs_cis, get_pos_embed_indices,
 )
 
 # Text embedding
@@ -154,6 +155,7 @@ class F5TTS(PretrainedModel):
         batch_size_range = [1, 2, max_batch_size]
         mel_size = 100
         max_seq_len = 3000
+        num_frames_range = [100, 2 * max_seq_len, max_seq_len * max_batch_size]
         hidden_size = 512
         concat_feature_dim = mel_size + hidden_size
         freq_embed_dim=256
@@ -161,56 +163,88 @@ class F5TTS(PretrainedModel):
         mapping = self.config.mapping
         if mapping.tp_size > 1:
             current_all_reduce_helper().set_workspace_tensor(mapping, 1)
-
-        noise = Tensor(
-            name='noise',
-            dtype=self.dtype,
-            shape=[-1, -1, mel_size],
-            dim_range=OrderedDict([
-                ('batch_size', [batch_size_range]),
-                ('max_duratuion', [[100, max_seq_len // 2, max_seq_len]]),
-                ('n_mels', [mel_size]),
+        if default_net().plugin_config.remove_input_padding:
+            noise = Tensor(
+                name='noise',
+                dtype=self.dtype,
+                shape=[-1, mel_size],
+                dim_range=OrderedDict([
+                    ('num_frames', [num_frames_range]),
+                    ('n_mels', [mel_size]),
+                ]))
+            cond = Tensor(
+                name='cond',
+                dtype=self.dtype,
+                shape=[-1, -1, concat_feature_dim],
+                dim_range=OrderedDict([
+                    ('num_frames', [num_frames_range]),
+                    ('embeded_length', [concat_feature_dim]),
             ]))
-        cond = Tensor(
-            name='cond',
-            dtype=self.dtype,
-            shape=[-1, -1, concat_feature_dim],
-            dim_range=OrderedDict([
-                ('batch_size', [batch_size_range]),
-                ('max_duratuion', [[100, max_seq_len // 2, max_seq_len]]),
-                ('embeded_length', [concat_feature_dim]),
-        ]))
-        time = Tensor(name='time',
-                            dtype=self.dtype,
-                            shape=[-1, freq_embed_dim],
-                            dim_range=OrderedDict([
-                                ('batch_size_t', [batch_size_range]),
-                                ('freq_dim', [freq_embed_dim]),
-                            ]))
-        rope_cos = Tensor(name='rope_cos',
-                            dtype=self.dtype,
-                            shape=[-1, -1, head_dim],
-                            dim_range=OrderedDict([
-                                ('batch_size', [batch_size_range]),
-                                ('max_duratuion', [[100, max_seq_len // 2, max_seq_len]]),
-                                ('head_dim', [head_dim]),
-                            ]))
-        rope_sin = Tensor(name='rope_sin',
-                            dtype=self.dtype,
-                            shape=[-1, -1, head_dim],
-                            dim_range=OrderedDict([
-                                ('batch_size', [batch_size_range]),
-                                ('max_duratuion', [[100, max_seq_len // 2, max_seq_len]]),
-                                ('head_dim', [head_dim]),
-                            ]))
-        # mask = Tensor(name='mask',
-        #                     dtype=str_dtype_to_trt("int32"),
-        #                     shape=[-1, -1],
-        #                     dim_range=OrderedDict([
-        #                         ('batch_size', [batch_size_range]),
-        #                         ('max_duratuion', [[100, max_seq_len // 2, max_seq_len]]),
-        #                     ]))
-        # return {'noise': noise, 'cond': cond, 'time': time, 'rope_cos': rope_cos, 'rope_sin': rope_sin, 'mask': mask}
+            time = Tensor(name='time',
+                                dtype=self.dtype,
+                                shape=[-1, freq_embed_dim],
+                                dim_range=OrderedDict([
+                                    ('num_frames', [num_frames_range]),
+                                    ('freq_dim', [freq_embed_dim]),
+                                ]))
+            rope_cos = Tensor(name='rope_cos',
+                                dtype=self.dtype,
+                                shape=[-1, -1, head_dim],
+                                dim_range=OrderedDict([
+                                    ('num_frames', [num_frames_range]),
+                                    ('head_dim', [head_dim]),
+                                ]))
+            rope_sin = Tensor(name='rope_sin',
+                                dtype=self.dtype,
+                                shape=[-1, -1, head_dim],
+                                dim_range=OrderedDict([
+                                    ('num_frames', [num_frames_range]),
+                                    ('head_dim', [head_dim]),
+                                ]))
+
+        else:
+            noise = Tensor(
+                name='noise',
+                dtype=self.dtype,
+                shape=[-1, -1, mel_size],
+                dim_range=OrderedDict([
+                    ('batch_size', [batch_size_range]),
+                    ('max_duratuion', [[100, max_seq_len // 2, max_seq_len]]),
+                    ('n_mels', [mel_size]),
+                ]))
+            cond = Tensor(
+                name='cond',
+                dtype=self.dtype,
+                shape=[-1, -1, concat_feature_dim],
+                dim_range=OrderedDict([
+                    ('batch_size', [batch_size_range]),
+                    ('max_duratuion', [[100, max_seq_len // 2, max_seq_len]]),
+                    ('embeded_length', [concat_feature_dim]),
+            ]))
+            print(233333333333333333333333333333333333333333333333333, batch_size_range)
+            time = Tensor(name='time',
+                                dtype=self.dtype,
+                                shape=[-1, freq_embed_dim],
+                                dim_range=OrderedDict([
+                                    ('batch_size', [batch_size_range]),
+                                    ('freq_dim', [freq_embed_dim]),
+                                ]))
+            rope_cos = Tensor(name='rope_cos',
+                                dtype=self.dtype,
+                                shape=[-1, -1, head_dim],
+                                dim_range=OrderedDict([
+                                    ('batch_size', [batch_size_range]),
+                                    ('max_duratuion', [[100, max_seq_len // 2, max_seq_len]]),
+                                    ('head_dim', [head_dim]),
+                                ]))
+            rope_sin = Tensor(name='rope_sin',
+                                dtype=self.dtype,
+                                shape=[-1, -1, head_dim],
+                                dim_range=OrderedDict([
+                                    ('batch_size', [batch_size_range]),
+                                    ('max_duratuion', [[100, max_seq_len // 2, max_seq_len]]),
+                                    ('head_dim', [head_dim]),
+                                ]))
         input_lengths = Tensor(
             name="input_lengths",
             dtype=trt.int32,
